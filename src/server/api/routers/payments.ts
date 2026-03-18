@@ -5,7 +5,19 @@ import { TRPCError } from "@trpc/server";
 import { checkIfSubscribed } from "~/shared/hooks/useUserSubscription";
 import { z } from "zod";
 
-const client = new LemonsqueezyClient(env.LEMON_SQUEEZY_API_KEY);
+// Lazy client getter - validates only when actually used (not at build time)
+function getLemonSqueezyClient(): LemonsqueezyClient {
+  const apiKey = env.LEMON_SQUEEZY_API_KEY;
+
+  if (!apiKey) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "Payment system not configured. Please contact support.",
+    });
+  }
+
+  return new LemonsqueezyClient(apiKey);
+}
 
 const createPremiumCheckoutSchema = z.object({
   language: z.enum(["en", "pl"]),
@@ -42,7 +54,19 @@ export const paymentsRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       const language = input.language;
       const translations = checkoutTranslations[language];
-      const newCheckout = await client.createCheckout({
+      
+      // Validate required Lemon Squeezy configuration
+      const storeId = env.LEMON_SQUEEZY_STORE_ID;
+      const variantId = env.LEMON_SQUEEZY_SUBSCRIPTION_VARIANT_ID;
+      
+      if (!storeId || !variantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Payment system not configured. Please contact support.",
+        });
+      }
+      
+      const newCheckout = await getLemonSqueezyClient().createCheckout({
         checkout_data: {
           custom: {
             // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -56,8 +80,8 @@ export const paymentsRouter = createTRPCRouter({
           embed: true,
         },
 
-        store: env.LEMON_SQUEEZY_STORE_ID,
-        variant: env.LEMON_SQUEEZY_SUBSCRIPTION_VARIANT_ID,
+        store: storeId,
+        variant: variantId,
         product_options: translations,
       });
 
@@ -79,7 +103,7 @@ export const paymentsRouter = createTRPCRouter({
 
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-ignore
-    const updateResult = await client.updateSubscription({
+    const updateResult = await getLemonSqueezyClient().updateSubscription({
       id: subscription.lemonSqueezyId,
       cancelled: true,
     });
@@ -123,7 +147,7 @@ export const paymentsRouter = createTRPCRouter({
       });
     }
 
-    const subscriptionResult = await client.retrieveSubscription({
+    const subscriptionResult = await getLemonSqueezyClient().retrieveSubscription({
       id: subscription.lemonSqueezyId,
     });
 

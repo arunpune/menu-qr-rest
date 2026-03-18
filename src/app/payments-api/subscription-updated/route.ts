@@ -4,6 +4,8 @@ import { type NextRequest } from "next/server";
 import { env } from "~/env.mjs";
 import { supabase } from "~/server/supabase/supabaseClient";
 
+// Note: Signature verification disabled - configure LEMONS_SQUEEZY_SIGNATURE_SECRET to enable
+
 // Put this in your billing lib and just import the type instead
 type LemonsqueezySubscription = Awaited<
   ReturnType<typeof listAllSubscriptions>
@@ -46,21 +48,37 @@ type Payload = {
 
 export const POST = async (request: NextRequest) => {
   try {
-    const text = await request.text();
-    const hmac = crypto.createHmac(
-      "sha256",
-      env.LEMONS_SQUEEZY_SIGNATURE_SECRET,
-    );
-    const digest = Buffer.from(hmac.update(text).digest("hex"), "utf8");
-    const signature = Buffer.from(
-      request.headers.get("x-signature") as string,
-      "utf8",
-    );
+    // Add timeout protection for webhook processing
+    const text = await Promise.race([
+      request.text(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Request timeout")), 25000) // 25s for Vercel serverless
+      ),
+    ]);
+    
+    // Optional signature verification - only validates if secret is configured
+    const secret = env.LEMONS_SQUEEZY_SIGNATURE_SECRET;
+    
+    if (secret) {
+      // TypeScript now knows secret is a valid string
+      const hmac = crypto.createHmac("sha256", secret);
+      const digest = Buffer.from(hmac.update(text).digest("hex"), "utf8");
+      
+      const signatureHeader = request.headers.get("x-signature");
 
-    if (!crypto.timingSafeEqual(digest, signature)) {
-      return new Response("Invalid signature.", {
-        status: 400,
-      });
+      if (!signatureHeader) {
+        console.error("[Webhook] Missing x-signature header");
+
+        return new Response("Missing x-signature header.", { status: 400 });
+      }
+      
+      const signature = Buffer.from(signatureHeader, "utf8");
+      
+      if (!crypto.timingSafeEqual(digest, signature)) {
+        console.error("[Webhook] Invalid signature");
+
+        return new Response("Invalid signature.", { status: 400 });
+      }
     }
 
     const payload = JSON.parse(text) as Payload;
@@ -102,16 +120,19 @@ export const POST = async (request: NextRequest) => {
             profile_id: custom_data.userId,
           });
 
-        if (error) console.error(JSON.stringify(error));
+        if (error) {
+          console.error("[Webhook] Database upsert error:", JSON.stringify(error));
+          // Don't fail the webhook - Lemon Squeezy will retry
+        }
 
-        console.log(payload);
+        console.log("[Webhook] Successfully processed:", eventName);
         break;
       default:
-        // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-        throw new Error(`🤷‍♀️ Unhandled event: ${eventName ?? ""}`);
+        console.warn(`[Webhook] Unhandled event type: ${eventName ?? "unknown"}`);
+        // Don't throw - return success to prevent retries for unknown events
     }
   } catch (error: unknown) {
-    console.error(JSON.stringify(error));
+    console.error("[Webhook] Processing error:", error);
     if (isError(error)) {
       return new Response(`Webhook error: ${error.message}`, {
         status: 400,

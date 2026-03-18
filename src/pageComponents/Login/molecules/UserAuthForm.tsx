@@ -19,11 +19,24 @@ import {
   loginValidationSchema,
 } from "./UserAuthForm.schema";
 
-const signInWithOauth = (provider: Provider) => {
-  void supabase().auth.signInWithOAuth({
+const signInWithOauth = async (provider: Provider, toast: ReturnType<typeof useToast>["toast"]) => {
+  const redirectUrl = process.env.NEXT_PUBLIC_APP_URL 
+    ? `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`
+    : `${window.location.origin}/dashboard`;
+    
+  const { error } = await supabase().auth.signInWithOAuth({
     provider: provider,
-    options: { redirectTo: `${window.location.origin}/dashboard` },
+    options: { redirectTo: redirectUrl },
   });
+
+  if (error) {
+    toast({
+      title: "OAuth Error",
+      description: error.message,
+      variant: "destructive",
+      duration: 9000,
+    });
+  }
 };
 
 export function UserAuthForm() {
@@ -82,7 +95,7 @@ export function UserAuthForm() {
       <button
         type="button"
         className={cn(buttonVariants({ variant: "outline" }), "flex gap-2")}
-        onClick={() => signInWithOauth("google")}
+        onClick={() => void signInWithOauth("google", toast)}
       >
         <Icons.google width={16} />
         Google
